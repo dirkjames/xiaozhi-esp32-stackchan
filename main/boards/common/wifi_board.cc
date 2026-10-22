@@ -9,6 +9,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_network.h>
+#include <esp_wifi.h>
 #include <esp_log.h>
 #include <utility>
 
@@ -25,6 +26,83 @@ static const char *TAG = "WifiBoard";
 
 // Connection timeout in seconds
 static constexpr int CONNECT_TIMEOUT_SEC = 60;
+
+// ===== WiFi 漫游看护（复刻 2026-10-20 方案, 用户要求恢复）=====
+// 每 10s 检查一次, 仅空闲态动作: 当前 RSSI 连续 2 个周期 < -65dBm 且扫描发现
+// 同 SSID 更强 AP(>=当前+8dB) 时主动断开, 由 WifiStation 按 RSSI 降序重连。
+// 配合 wifi_station.cc 的 ALL_CHANNEL_SCAN+BY_SIGNAL, 断开后必然重连到最强 AP。
+static void WifiRoamWatchdogTask(void* arg) {
+    constexpr int kCheckIntervalSec = 10;
+    constexpr int8_t kWeakRssi = -65;     // 低于此值视为弱信号
+    constexpr int8_t kBetterMargin = 8;   // 更强 AP 需至少强 8dB, 防抖
+    constexpr int kRoamCooldownSec = 300; // 漫游后冷却 300s
+    constexpr int kScanCooldownSec = 120; // 未发现更强 AP 冷却 120s
+
+    int weak_count = 0;
+    int cooldown_sec = 0;
+    auto& app = Application::GetInstance();
+    auto& wifi = WifiManager::GetInstance();
+
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(kCheckIntervalSec * 1000));
+        if (cooldown_sec > 0) {
+            cooldown_sec -= kCheckIntervalSec;
+            continue;
+        }
+        // 仅空闲态动作, 不打扰对话; 配置模式/未连接不处理
+        if (app.GetDeviceState() != kDeviceStateIdle ||
+            wifi.IsConfigMode() || !wifi.IsConnected()) {
+            continue;
+        }
+
+        int8_t rssi = wifi.GetRssi();
+        if (rssi == 0 || rssi >= kWeakRssi) {
+            weak_count = 0;
+            continue;
+        }
+        weak_count++;
+        if (weak_count < 2) {
+            continue;  // 需连续 2 个周期弱信号才扫描, 防瞬时抖动
+        }
+
+        // 阻塞扫描约 1.5s, 仅空闲态执行, 可接受
+        wifi_scan_config_t scan_cfg = {};
+        if (esp_wifi_scan_start(&scan_cfg, true) != ESP_OK) {
+            weak_count = 0;
+            cooldown_sec = kScanCooldownSec;
+            continue;
+        }
+        uint16_t ap_num = 0;
+        esp_wifi_scan_get_ap_num(&ap_num);
+        auto* ap_records = (wifi_ap_record_t*)malloc(ap_num * sizeof(wifi_ap_record_t));
+        if (ap_records == nullptr) {
+            weak_count = 0;
+            cooldown_sec = kScanCooldownSec;
+            continue;
+        }
+        esp_wifi_scan_get_ap_records(&ap_num, ap_records);
+        std::string current_ssid = wifi.GetSsid();
+        int8_t best_rssi = -128;
+        for (int i = 0; i < ap_num; i++) {
+            if (current_ssid == (char*)ap_records[i].ssid && ap_records[i].rssi > best_rssi) {
+                best_rssi = ap_records[i].rssi;
+            }
+        }
+        free(ap_records);
+
+        if (best_rssi >= rssi + kBetterMargin) {
+            ESP_LOGW(TAG, "WiFi roaming: current AP RSSI %d dBm, same SSID best AP %d dBm, reconnecting to strongest AP",
+                     (int)rssi, (int)best_rssi);
+            esp_wifi_disconnect();  // WifiStation 自动按 RSSI 降序重连
+            cooldown_sec = kRoamCooldownSec;
+        } else {
+            ESP_LOGI(TAG, "WiFi roam check: weak (%d dBm) but no same-SSID AP stronger than %d dBm, keep",
+                     (int)rssi, (int)(rssi + kBetterMargin));
+            cooldown_sec = kScanCooldownSec;
+        }
+        weak_count = 0;
+    }
+}
 
 WifiBoard::WifiBoard() {
     // Create connection timeout timer
@@ -114,6 +192,12 @@ void WifiBoard::OnNetworkEvent(NetworkEvent event, const std::string& data) {
 #endif
             in_config_mode_ = false;
             ESP_LOGI(TAG, "Connected to WiFi: %s", data.c_str());
+            // 漫游看护只启动一次（后续重连事件不再重复创建）
+            static bool roam_task_started = false;
+            if (!roam_task_started) {
+                roam_task_started = true;
+                xTaskCreate(WifiRoamWatchdogTask, "wifi_roam", 4096, nullptr, 1, nullptr);
+            }
             break;
         case NetworkEvent::Scanning:
             ESP_LOGI(TAG, "WiFi scanning");

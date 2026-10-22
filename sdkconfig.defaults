@@ -76,3 +76,11 @@ CONFIG_LV_USE_WIN=n
 CONFIG_LV_BUILD_EXAMPLES=n
 CONFIG_LV_BUILD_DEMOS=n
 
+# ===== StackChan 追加项（保持上游以上所有调优，只增不改）=====
+# 板型与 OTA
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_BOARD_TYPE_M5STACK_CORE_S3=y
+CONFIG_OTA_URL="https://yinxuxian-test.superacme.com/xiaozhi/ota/"
+# 唤醒后主任务同时跑 WS/TLS 握手 + Opus 编码，上游 8192 实测栈溢出崩溃（2026-10-20）
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=10240
+

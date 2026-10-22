@@ -6,6 +6,8 @@
 #include "power_save_timer.h"
 #include "i2c_device.h"
 #include "axp2101.h"
+#include "mcp_server.h"
+#include "SCSCL.h"
 
 #include <esp_log.h>
 #include <driver/i2c_master.h>
@@ -126,6 +128,125 @@ private:
     EspVideo* camera_;
     esp_timer_handle_t touchpad_timer_;
     PowerSaveTimer* power_save_timer_;
+    SCSCL servo_;           // StackChan 转头舵机 (FTServo SCSCL 协议)
+    bool servo_ok_ = false;
+    bool pitch_ok_ = false;  // 俯仰(点头)舵机 id=2 是否在总线上
+
+    // StackChan 底座 PY32 IO 扩展器 (I2C 0x6F): 通道0 = VM EN, 舵机电源使能。
+    // 与官方固件比对定位到的丢失代码 (官方 hal_io_expander.cpp: 
+    // 舵机初始化前必做: 等PY32慢启动→ch0设输出+上拉→输出高→延时200ms)。
+    // 缺了这一步舵机电源轨不开, 总线上舵机永远不应答。
+    void InitializeStackChanBase() {
+        ESP_LOGI(TAG, "Init PY32 IO expander (servo power)");
+        i2c_device_config_t py32_cfg = {
+            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+            .device_address = 0x6F,
+            .scl_speed_hz = 100000,
+        };
+        i2c_master_dev_handle_t py32 = nullptr;
+        if (i2c_master_bus_add_device(i2c_bus_, &py32_cfg, &py32) != ESP_OK) {
+            ESP_LOGE(TAG, "PY32 add device failed");
+            return;
+        }
+        auto w8 = [&](uint8_t reg, uint8_t val) -> bool {
+            uint8_t buf[2] = {reg, val};
+            return i2c_master_transmit(py32, buf, sizeof(buf), 1000) == ESP_OK;
+        };
+        auto r8 = [&](uint8_t reg, uint8_t* val) -> bool {
+            return i2c_master_transmit_receive(py32, &reg, 1, val, 1, 1000) == ESP_OK;
+        };
+        auto bit_on = [&](uint8_t reg, uint8_t mask) -> bool {
+            uint8_t v = 0;
+            if (!r8(reg, &v)) return false;
+            v |= mask;
+            return w8(reg, v);
+        };
+        auto bit_off = [&](uint8_t reg, uint8_t mask) -> bool {
+            uint8_t v = 0;
+            if (!r8(reg, &v)) return false;
+            v &= ~mask;
+            return w8(reg, v);
+        };
+        // PY32 可能慢启动, 官方逻辑: 每200ms探测版本寄存器, 最多1.2s
+        uint8_t ver = 0;
+        for (int i = 0; i < 6; i++) {
+            vTaskDelay(pdMS_TO_TICKS(200));
+            if (r8(0x02, &ver) && ver != 0x00 && ver != 0xFF) break;
+            ver = 0;
+        }
+        if (ver == 0) {
+            ESP_LOGE(TAG, "PY32 IO expander not found (version read failed)");
+            return;
+        }
+        ESP_LOGI(TAG, "PY32 version: 0x%02X", ver);
+        // ch0 = VM EN: 输出 + 上拉 + 输出高 (官方 setServoPowerEnabled(true))
+        bool ok = bit_on(0x03, 0x01)    // GPIO_M_L: ch0 output
+               && bit_off(0x0B, 0x01)   // GPIO_PD_L: pull-down off
+               && bit_on(0x09, 0x01)    // GPIO_PU_L: pull-up on
+               && bit_on(0x05, 0x01);   // GPIO_O_L: high
+        ESP_LOGI(TAG, "Servo power (VM EN) %s", ok ? "enabled" : "FAILED");
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+
+    void InitializeServo() {
+        // 官方 StackChan 同款: SCSCL 总线 1Mbps, UART1, TX=G6 RX=G7, yaw 舵机 id=1
+        // (引脚与参数取自实测通过的 firmware_capture 工程, 2026-10-16 定案)
+        servo_ok_ = servo_.begin(UART_NUM_1, 1000000, 6, 7);
+        // 自检: 用 SCSCL 驱动发正确的 READ Position 帧, 舵机有电才会应答
+        int pos = servo_.ReadPos(1);
+        ESP_LOGI(TAG, "Servo self-test id=1: %s (pos=%d)", pos >= 0 ? "RESPONDED" : "no response", pos);
+        // 俯仰(点头)舵机 id=2 探测 (官方 StackChan: id=2, 零位 620)
+        int pos2 = servo_.ReadPos(2);
+        pitch_ok_ = (pos2 >= 0);
+        ESP_LOGI(TAG, "Servo self-test id=2 (pitch): %s (pos=%d)", pitch_ok_ ? "RESPONDED" : "no response", pos2);
+    }
+
+    void InitializeTools() {
+        auto& mcp_server = McpServer::GetInstance();
+        mcp_server.AddTool(
+            "self.servo.set_angle",
+            "转动 StackChan 头部。angle 为相对正前方的角度：正数向左转，负数向右转，0 回正，范围 -60 到 60",
+            PropertyList({
+                Property("angle", kPropertyTypeInteger, -60, 60)
+            }),
+            [this](const PropertyList& properties) -> ReturnValue {
+                if (!servo_ok_) {
+                    throw std::runtime_error("servo bus not ready");
+                }
+                int angle = properties["angle"].value<int>();
+                // 官方 StackChan 映射: raw = 460 + angle*3.2 (零位 460=正前, 实测镜像已含在此式中, 正=左)
+                int raw = 460 + (int)(angle * 3.2f);
+                if (raw < 0) raw = 0;
+                if (raw > 1000) raw = 1000;
+                servo_.EnableTorque(1, 1);
+                servo_.WritePos(1, (uint16_t)raw, 20, 0);
+                int pos = servo_.ReadPos(1);  // 回读验证舵机是否真的执行
+                ESP_LOGI(TAG, "Servo set_angle(%d) -> raw %d, readback=%d", angle, raw, pos);
+                return true;
+            });
+        // 俯仰(点头)工具: 仅当 id=2 舵机在总线上时注册 (官方 StackChan: id=2, 零位 620, raw 限幅 30~870)
+        if (pitch_ok_) {
+            mcp_server.AddTool(
+                "self.servo.set_pitch",
+                "让 StackChan 头部上下点头。angle 为相对水平的角度：正数低头，负数抬头，0 回正，范围 -30 到 30",
+                PropertyList({
+                    Property("angle", kPropertyTypeInteger, -30, 30)
+                }),
+                [this](const PropertyList& properties) -> ReturnValue {
+                    int angle = properties["angle"].value<int>();
+                    // 官方 StackChan 俯仰: 零位 620, raw 限幅 30~870 (符号待实测, 反了改一处符号)
+                    int raw = 620 + (int)(angle * 3.2f);
+                    if (raw < 30) raw = 30;
+                    if (raw > 870) raw = 870;
+                    servo_.EnableTorque(2, 1);
+                    servo_.WritePos(2, (uint16_t)raw, 20, 0);
+                    int pos = servo_.ReadPos(2);
+                    ESP_LOGI(TAG, "Servo set_pitch(%d) -> raw %d, readback=%d", angle, raw, pos);
+                    return true;
+                });
+        }
+    }
+
 
     void InitializePowerSaveTimer() {
         power_save_timer_ = new PowerSaveTimer(-1, 60, 300);
@@ -341,6 +462,9 @@ public:
         InitializeIli9342Display();
         InitializeCamera();
         InitializeFt6336TouchPad();
+        InitializeStackChanBase();  // 官方固件同款: 先开舵机电源(VM EN)再初始化舵机
+        InitializeServo();
+        InitializeTools();
         GetBacklight()->RestoreBrightness();
     }
 

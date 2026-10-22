@@ -738,6 +738,13 @@ else()
 endif()
 list(APPEND SOURCES ${BOARD_SOURCES})
 
+# StackChan 转头舵机 (FTServo SCSCL, 仅 CoreS3 板)
+if(CONFIG_BOARD_TYPE_M5STACK_CORE_S3)
+    file(GLOB FTSERVO_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/boards/m5stack-core-s3/ftservo/*.cc)
+    list(APPEND SOURCES ${FTSERVO_SOURCES})
+    list(APPEND INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/boards/m5stack-core-s3/ftservo)
+endif()
+
 # Select audio processor according to Kconfig
 if(CONFIG_USE_AUDIO_PROCESSOR)
     list(APPEND SOURCES "audio/processors/afe_audio_processor.cc")

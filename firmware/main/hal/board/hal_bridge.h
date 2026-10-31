@@ -29,6 +29,7 @@ struct XiaozhiConfig_t {
     bool allowShutdownWhenCharging   = false;
     uint8_t idleRandomMovementLevel  = 2;
     bool startAiAgentOnBoot          = false;
+    uint8_t cloudProfile             = 0;  // 0 = 官方 xiaozhi.me, 1 = 自建云
 };
 
 void lock();
@@ -45,6 +46,7 @@ void toggle_xiaozhi_chat_state();
 void disply_lvgl_lock();
 void disply_lvgl_unlock();
 lv_disp_t* display_get_lvgl_display();
+void display_apply_expression(const char* name, int duration_ms = 0);
 
 void xiaozhi_board_init();
 void start_xiaozhi_app();
@@ -63,5 +65,22 @@ void board_set_speaker_volume(uint8_t volume, bool permanent = false);
 uint8_t board_get_speaker_volume();
 
 void app_play_sound(const std::string_view& sound);
+
+/**
+ * @brief Play an embedded sfx by name (see assets::find_sound)
+ *
+ * When TTS is speaking the request is queued instead, and played by
+ * process_deferred_sounds() once the device leaves the speaking state.
+ *
+ * @param name sfx name
+ * @return true when the name is known (queued or playing), false when unknown
+ */
+bool app_play_sound_by_name(std::string_view name);
+
+/**
+ * @brief Flush queued sfx once TTS is no longer speaking
+ *
+ */
+void process_deferred_sounds();
 
 }  // namespace hal_bridge

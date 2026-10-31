@@ -1,8 +1,17 @@
 #include "cores3_audio_codec.h"
 
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <driver/i2c_master.h>
 #include <driver/i2s_tdm.h>
+
+#if CONFIG_STACKCHAN_DOA
+#include "hal/doa/hal_doa.h"
+#endif
+
+#ifdef STACKCHAN_WAV_TEST
+#include "wav_test_feeder.h"
+#endif
 
 #define TAG "CoreS3AudioCodec"
 
@@ -64,7 +73,12 @@ CoreS3AudioCodec::CoreS3AudioCodec(void* i2c_master_handle, int input_sample_rat
 
     es7210_codec_cfg_t es7210_cfg = {};
     es7210_cfg.ctrl_if = in_ctrl_if_;
+#if CONFIG_STACKCHAN_DUAL_MIC
+    // 只取 MIC1/MIC2 组成一对，供 DOA 比较通道间相位；通道 0 仍作为对话输入
+    es7210_cfg.mic_selected = ES7210_SEL_MIC1 | ES7210_SEL_MIC2;
+#else
     es7210_cfg.mic_selected = ES7210_SEL_MIC1 | ES7210_SEL_MIC2 | ES7210_SEL_MIC3;
+#endif
     in_codec_if_ = es7210_codec_new(&es7210_cfg);
     assert(in_codec_if_ != NULL);
 
@@ -203,7 +217,11 @@ void CoreS3AudioCodec::EnableInput(bool enable) {
             fs.channel_mask |= ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1);
         }
         ESP_ERROR_CHECK(esp_codec_dev_open(input_dev_, &fs));
-        ESP_ERROR_CHECK(esp_codec_dev_set_in_channel_gain(input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0), input_gain_));
+        // 双麦必须同增益：之前只给 CH0 下发 gain（ES7210 上限 37.5dB → 截到 37.5dB），
+        // CH1 停留驱动默认 30dB，两路固定差 7.5dB。虽然不改相位，但会压低第二路的
+        // 跨谱权重，IPD 估计更抖；同时对着 DOA demo 的"两只麦同为 0x1B"口径对齐。
+        ESP_ERROR_CHECK(esp_codec_dev_set_in_channel_gain(
+            input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0) | ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1), input_gain_));
     } else {
         ESP_ERROR_CHECK(esp_codec_dev_close(input_dev_));
     }
@@ -234,13 +252,25 @@ void CoreS3AudioCodec::EnableOutput(bool enable) {
 int CoreS3AudioCodec::Read(int16_t* dest, int samples) {
     if (input_enabled_) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_read(input_dev_, (void*)dest, samples * sizeof(int16_t)));
+#ifdef STACKCHAN_WAV_TEST
+        // 2026-10-30 端到端仿真测试：保留上面的真实 I2S 读（用它维持 24 kHz 实时节拍并
+        // 排空 RX DMA），随后把内容替换成预录 WAV。测试模式下 DOA 不参与，避免对着
+        // 单声道注入数据算出无意义的方位角。
+        wav_test::Fill(dest, samples / input_channels_, input_channels_, input_sample_rate_);
+#elif CONFIG_STACKCHAN_DOA
+        // samples 是「帧数 x 通道数」，双声道交错；DOA 只需要帧数
+        if (input_channels_ >= 2) {
+            hal_doa::on_capture(dest, samples / input_channels_);
+        }
+#endif
     }
     return samples;
 }
 
 int CoreS3AudioCodec::Write(const int16_t* data, int samples) {
-    if (output_enabled_) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t)));
+    if (!output_enabled_) {
+        return samples;
     }
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t)));
     return samples;
 }

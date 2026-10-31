@@ -25,6 +25,11 @@ private:
     std::unique_ptr<setup_workers::WorkerBase> _startup_worker;
     uint32_t _screensaver_timecount = 0;
     bool _startup_checked           = false;
+#ifdef XIAOZHI_AUTO_TEST
+    // 自动化压测: 视图就绪 15 秒后自动打开 AI.AGENT
+    uint32_t _autotest_view_time = 0;
+    bool _autotest_opened        = false;
+#endif
 
     void create_launcher_view();
     void screensaver_update();

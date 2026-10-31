@@ -144,6 +144,18 @@ public:
     {
     }
 
+    /**
+     * @brief Restore the runtime angle / raw position limits to the configured values
+     *
+     * The SCS stall protection permanently narrows the reachable range once it
+     * believes the head is blocked. Starting a new motion sequence (dance, DOA
+     * turn) from a narrowed range makes it look like "the servo no longer moves",
+     * so callers can reset it before driving a new gesture.
+     */
+    virtual void resetRuntimeLimits()
+    {
+    }
+
 protected:
     Servo()
     {

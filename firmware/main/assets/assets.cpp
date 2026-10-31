@@ -65,4 +65,28 @@ lv_image_dsc_t get_image(std::string_view name)
     return dsc;
 }
 
+std::string_view find_sound(std::string_view name)
+{
+    struct Entry {
+        std::string_view name;
+        std::string_view ogg;
+    };
+
+    static const Entry _table[] = {
+        {"wake", OGG_SFX_wake},           {"listen_start", OGG_SFX_listen_start},
+        {"listen_end", OGG_SFX_listen_end}, {"thinking", OGG_SFX_thinking},
+        {"happy", OGG_SFX_happy},         {"sad", OGG_SFX_sad},
+        {"error", OGG_SFX_error},         {"dance_start", OGG_SFX_dance_start},
+        {"beat_tick", OGG_SFX_beat_tick}, {"horn", OGG_SFX_horn},
+    };
+
+    for (const auto& entry : _table) {
+        if (entry.name == name) {
+            return entry.ogg;
+        }
+    }
+
+    return {};
+}
+
 }  // namespace assets

@@ -4,6 +4,10 @@
  * SPDX-License-Identifier: MIT
  */
 #include "hal.h"
+#include <esp_timer.h>
+#include <esp_wifi.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <memory>
 #include <mooncake_log.h>
 #include <nvs_flash.h>
@@ -134,6 +138,9 @@ void Hal::updateHeapStatusLog()
 #include <stackchan/stackchan.h>
 #include <apps/common/common.h>
 #include <assets/assets.h>
+#if CONFIG_STACKCHAN_DOA
+#include "doa/hal_doa.h"
+#endif
 
 void Hal::xiaozhi_board_init()
 {
@@ -144,18 +151,55 @@ void Hal::xiaozhi_board_init()
 
 static void _stackchan_update_task(void* param)
 {
-    bool is_setup_done = false;
+    bool is_setup_done       = false;
+    TickType_t last_full_ui  = 0;
+
+    // CPU 负载采样：sdkconfig 已开 GENERATE_RUN_TIME_STATS + esp_timer 计数，
+    // 直接用 idle 任务的运行时间算占用率，不需要额外的统计缓冲(内部 SRAM 紧张)。
+    TickType_t last_cpu_tick = xTaskGetTickCount();
+    uint64_t last_idle_cnt   = ulTaskGetIdleRunTimeCounter();
+    uint64_t last_cpu_us     = esp_timer_get_time();
 
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(20));
 
         tools::update_reminders();
+        hal_bridge::process_deferred_sounds();
+
+        const bool idle      = hal_bridge::is_xiaozhi_idle();
+        const TickType_t now = xTaskGetTickCount();
+
+        if (now - last_cpu_tick >= pdMS_TO_TICKS(5000)) {
+            last_cpu_tick           = now;
+            const uint64_t idle_cnt = ulTaskGetIdleRunTimeCounter();
+            const uint64_t cpu_us   = esp_timer_get_time();
+            const uint64_t d_idle   = idle_cnt - last_idle_cnt;
+            const uint64_t d_us     = cpu_us - last_cpu_us;
+            last_idle_cnt           = idle_cnt;
+            last_cpu_us             = cpu_us;
+            if (d_us > 0) {
+                const int busy_pct = (int)(100.0f * (1.0f - (float)d_idle / (float)d_us) + 0.5f);
+                wifi_ap_record_t ap{};
+                const int rssi = (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) ? (int)ap.rssi : 0;
+                mclog::tagInfo(_tag, "cpu busy {}% rssi {}dBm (idle {}us / {}us)", busy_pct, rssi,
+                               (unsigned)d_idle, (unsigned)d_us);
+            }
+        }
+
+        // 舵机弹簧必须接近 50Hz 推进：Servo::update() 内部有 20ms 节流且使用固定步长，
+        // 低频调用会让所有动作按比例变慢。锁只覆盖 motion.update()，绝不在锁内延时。
+        {
+            LvglLockGuard lock;
+            GetStackChan().motion().update();
+        }
+
+        // 会话/聆听期把整树 UI 刷新降到 ~10Hz，空闲期保持 50Hz
+        if (!idle && (now - last_full_ui) < pdMS_TO_TICKS(100)) {
+            continue;
+        }
+        last_full_ui = now;
 
         LvglLockGuard lock;
-
-        if (!hal_bridge::is_xiaozhi_idle()) {
-            vTaskDelay(pdMS_TO_TICKS(100));
-        }
 
         GetStackChan().update();
 
@@ -199,6 +243,11 @@ void Hal::startXiaozhi()
     // Start stackchan update task
     xTaskCreatePinnedToCore(_stackchan_update_task, "stackchan", 4096, NULL, 3, NULL, 1);
 
+#if CONFIG_STACKCHAN_DOA
+    // 必须在音频输入任务开始投递数据之前就绪（数据到达时缓冲为空则直接丢弃）
+    hal_doa::init();
+#endif
+
     hal_bridge::start_xiaozhi_app();
 }
 
@@ -210,6 +259,7 @@ XiaozhiConfig_t Hal::getXiaozhiConfig()
         .allowShutdownWhenCharging = bridge_config.allowShutdownWhenCharging,
         .idleRandomMovementLevel   = bridge_config.idleRandomMovementLevel,
         .startAiAgentOnBoot        = bridge_config.startAiAgentOnBoot,
+        .cloudProfile              = bridge_config.cloudProfile,
     };
 }
 
@@ -220,6 +270,7 @@ void Hal::setXiaozhiConfig(XiaozhiConfig_t config)
         .allowShutdownWhenCharging = config.allowShutdownWhenCharging,
         .idleRandomMovementLevel   = config.idleRandomMovementLevel,
         .startAiAgentOnBoot        = config.startAiAgentOnBoot,
+        .cloudProfile              = config.cloudProfile,
     });
 }
 

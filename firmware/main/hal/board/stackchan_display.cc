@@ -15,6 +15,7 @@
 #include <lvgl.h>
 #include <lvgl_theme.h>
 #include <stackchan/stackchan.h>
+#include <stackchan/avatar/expression_presets.h>
 #include <assets/lang_config.h>
 #include <hal/hal.h>
 
@@ -269,8 +270,12 @@ void StackChanAvatarDisplay::SetupUI()
     stackchan.attachAvatar(std::move(avatar));
     stackchan.addModifier(std::make_unique<BreathModifier>());
     blink_modifier_id_ = stackchan.addModifier(std::make_unique<BlinkModifier>());
-    stackchan.addModifier(std::make_unique<HeadPetModifier>());
-    stackchan.addModifier(std::make_unique<ImuEventModifier>());
+    // 语音机器人演示只保留「听声转头(仅 yaw)/跳舞/表情」三条动作线。
+    // HeadPet 与 IMU 晃动都与设备状态无关：桌面振动、手碰、搬动会被误判成抚摸/晃动，
+    // 触发 yaw+pitch 一起动(甚至还 setModifyLock，挡住 DOA/跳舞)，是「空闲时电机自己转、
+    // DOA 却出现上下转」的主要来源，故不再挂载。
+    // stackchan.addModifier(std::make_unique<HeadPetModifier>());
+    // stackchan.addModifier(std::make_unique<ImuEventModifier>());
 
     preview_image_ = lv_image_create(lv_screen_active());
     lv_obj_set_size(preview_image_, 320, 240);
@@ -320,36 +325,41 @@ void StackChanAvatarDisplay::CreateIdleMotionModifier()
 
 void StackChanAvatarDisplay::SetEmotion(const char* emotion)
 {
+    // llm.emotion 通道：保持历史行为（持续到下一次变更），未知名称回退 neutral
+    ApplyExpression(emotion, 0);
+}
+
+void StackChanAvatarDisplay::ApplyExpression(const char* name, int duration_ms)
+{
     auto& stackchan = GetStackChan();
 
-    if (!stackchan.hasAvatar() || !emotion) {
+    if (!stackchan.hasAvatar() || !name) {
         return;
     }
 
     DisplayLockGuard lock(this);
 
-    // ESP_LOGE(TAG, "SetEmotion: %s", emotion);
+    auto preset = findExpressionPreset(name);
+    if (!preset) {
+        ESP_LOGW(TAG, "Unknown emotion: %s, using NEUTRAL", name);
+        preset = findExpressionPreset("neutral");
+    }
+    if (!preset) {
+        return;
+    }
 
-    auto& avatar = stackchan.avatar();
+    if (duration_ms > 0) {
+        // 定时表情：到点恢复上一次的表情与默认眼/嘴权重
+        stackchan.addModifier(std::make_unique<TimedExpressionModifier>(*preset, static_cast<uint32_t>(duration_ms)));
+    } else {
+        applyExpressionPreset(stackchan, *preset);
+    }
 
-    // Map emotion string to stackchan::Emotion
-    if (strcmp(emotion, "neutral") == 0) {
-        avatar.setEmotion(Emotion::Neutral);
-    } else if (strcmp(emotion, "happy") == 0) {
-        avatar.setEmotion(Emotion::Happy);
-    } else if (strcmp(emotion, "laughing") == 0) {
-        avatar.setEmotion(Emotion::Happy);
-    } else if (strcmp(emotion, "angry") == 0) {
-        avatar.setEmotion(Emotion::Angry);
-    } else if (strcmp(emotion, "sad") == 0) {
-        avatar.setEmotion(Emotion::Sad);
-    } else if (strcmp(emotion, "crying") == 0) {
-        avatar.setEmotion(Emotion::Sad);
-    } else if (strcmp(emotion, "sleepy") == 0) {
-        avatar.setEmotion(Emotion::Sleepy);
+    is_sleeping_ = (strcmp(preset->name, "sleepy") == 0);
+
+    if (is_sleeping_) {
+        auto& avatar = stackchan.avatar();
         avatar.setSpeech("Zzz…");
-        is_sleeping_ = true;
-        // avatar.mouth().setWeight(10);
 
         // Stop idle motion
         ESP_LOGW(TAG, "Stop idle motion");
@@ -363,12 +373,6 @@ void StackChanAvatarDisplay::SetEmotion(const char* emotion)
         // Return to default pose
         auto& motion = GetStackChan().motion();
         motion.pitchServo().moveWithSpeed(0, 80);
-
-    } else if (strcmp(emotion, "doubtful") == 0) {
-        avatar.setEmotion(Emotion::Doubt);
-    } else {
-        ESP_LOGW(TAG, "Unknown emotion: %s, using NEUTRAL", emotion);
-        avatar.setEmotion(Emotion::Neutral);
     }
 
     // Resync blink modifier base eye weights
@@ -485,6 +489,21 @@ void StackChanAvatarDisplay::SetStatus(const char* status)
     if (!stackchan.hasAvatar()) {
         ESP_LOGE(TAG, "Avatar is invalid");
         return;
+    }
+
+    // 状态切换打点：串口日志里可直接读出「听完话 → 蓝灯(Speaking)」的端侧间隔。
+    {
+        static uint32_t last_status_ms    = 0;
+        static const char* last_status    = nullptr;
+        const uint32_t now_ms             = GetHAL().millis();
+        if (last_status && last_status_ms != 0) {
+            ESP_LOGW(TAG, "[status] %s -> %s (+%u ms)", last_status, status,
+                     (unsigned)(now_ms - last_status_ms));
+        } else {
+            ESP_LOGW(TAG, "[status] %s", status);
+        }
+        last_status_ms = now_ms ? now_ms : 1;
+        last_status    = status;
     }
 
     auto& avatar = stackchan.avatar();

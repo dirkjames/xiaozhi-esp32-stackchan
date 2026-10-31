@@ -53,6 +53,23 @@ void AppLauncher::onLauncherRunning()
         screensaver_update();
     }
 
+#ifdef XIAOZHI_AUTO_TEST
+    if (_view && !_autotest_opened && GetHAL().millis() - _autotest_view_time > 15000) {
+        for (const auto& props : getAppProps()) {
+            if (props.info.name == "AI.AGENT") {
+                mclog::tagInfo(getAppInfo().name, "[auto-test] open AI.AGENT, app id: {}", props.appID);
+                openApp(props.appID);
+                _autotest_opened = true;
+                break;
+            }
+        }
+        if (!_autotest_opened) {
+            mclog::tagInfo(getAppInfo().name, "[auto-test] AI.AGENT not found");
+            _autotest_opened = true;
+        }
+    }
+#endif
+
     GetStackChan().update();
 }
 
@@ -78,6 +95,9 @@ void AppLauncher::create_launcher_view()
         mclog::tagInfo(getAppInfo().name, "handle open app, app id: {}", appID);
         openApp(appID);
     };
+#ifdef XIAOZHI_AUTO_TEST
+    _autotest_view_time = GetHAL().millis();
+#endif
 }
 
 void AppLauncher::screensaver_update()

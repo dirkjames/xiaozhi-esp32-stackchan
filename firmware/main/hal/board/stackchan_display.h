@@ -40,6 +40,15 @@ public:
 
     // Override Display methods to control Robot
     virtual void SetEmotion(const char* emotion) override;
+
+    /**
+     * @brief Apply an expression preset by name
+     *
+     * @param name preset name (see stackchan/avatar/expression_presets.cpp)
+     * @param duration_ms >0: revert to previous look after duration, 0: persistent
+     */
+    void ApplyExpression(const char* name, int duration_ms = 0);
+
     virtual void SetChatMessage(const char* role, const char* content) override;
     virtual void ClearChatMessages() override;
     virtual void SetPreviewImage(std::unique_ptr<LvglImage> image) override;

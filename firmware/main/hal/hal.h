@@ -48,6 +48,9 @@ enum class ImuMotionEvent {
     None = 0,
     Shake,
     PickUp,
+    Brake,
+    Turn,
+    Bump,
 };
 
 /**
@@ -119,6 +122,7 @@ struct XiaozhiConfig_t {
     bool allowShutdownWhenCharging   = false;
     uint8_t idleRandomMovementLevel  = 2;
     bool startAiAgentOnBoot          = false;
+    uint8_t cloudProfile             = 0;  // 0 = 官方 xiaozhi.me, 1 = 自建云
 };
 
 /**

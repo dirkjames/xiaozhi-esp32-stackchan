@@ -152,6 +152,11 @@ public:
         mclog::tagInfo(_tag, "id: {} set zero pos: {} to settings", _config.id, _zero_pos);
     }
 
+    void resetRuntimeLimits() override
+    {
+        reset_runtime_limits();
+    }
+
     void rotate(int velocity) override
     {
         velocity = uitk::clamp(velocity, -1000, 1000);
@@ -175,7 +180,11 @@ private:
     Mode _current_mode = Mode::Position;
 
     static constexpr uint32_t kStallFeedbackIntervalMs = 50;
-    static constexpr int kStallMinTargetDeltaRaw       = 8;
+    // 只有「目标离当前位置足够远」时才可能是真堵转。原值 8(2.5°) 太小：
+    // 跳舞 bounce 一拍的行程只有十几格，头只是被拍点带着轻微摆动，
+    // 就会被判成堵转，进而把允许区间永久收窄到当前角度（见 handle_stall），
+    // 之后这支舞/下一次舞的目标全被 clamp 掉，现场表现为「电机不动，只有咔咔声」。
+    static constexpr int kStallMinTargetDeltaRaw       = 40;
     static constexpr int kStallMaxPositionDeltaRaw     = 1;
     static constexpr int kStallCurrentRiseThreshold    = 80;
     static constexpr int kStallLoadRiseThreshold       = 150;

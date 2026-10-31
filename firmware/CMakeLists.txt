@@ -19,5 +19,11 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig.defaults.local")
     message(STATUS "StackChan: detected sdkconfig.defaults.local, applying overlay")
 endif()
 
+# Windows has a 32767-character command line limit. With all the managed
+# components this project pulls in, the include flags for
+# project_elf_src_esp32s3.c exceed that limit and ninja fails with
+# "CreateProcess: The parameter is incorrect". Force response files.
+set(CMAKE_NINJA_FORCE_RESPONSE_FILE ON)
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(stack-chan)

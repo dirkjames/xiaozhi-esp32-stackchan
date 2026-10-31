@@ -178,6 +178,9 @@ bool StackChanWifiStation::Start()
         Stop();
         return false;
     }
+    // 语音流实时性优先：关掉 modem sleep。默认 WIFI_PS_MIN_MODEM 会让 AP 把下行包攒到
+    // DTIM 才发，弱信号下直接表现为 opus 播放卡顿/抖动。
+    esp_wifi_set_ps(WIFI_PS_NONE);
     is_started_ = true;
     return true;
 }

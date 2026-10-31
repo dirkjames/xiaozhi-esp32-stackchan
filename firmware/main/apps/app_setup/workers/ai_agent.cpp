@@ -266,3 +266,89 @@ void XiaozhiGeneralWorker::update_idle_motion_label()
 {
     _label_idle_motion_value->setText(_idle_motion_level_labels[_config.idleRandomMovementLevel]);
 }
+
+XiaozhiCloudWorker::XiaozhiCloudWorker()
+{
+    mclog::info("XiaozhiCloudWorker start");
+
+    _config          = GetHAL().getXiaozhiConfig();
+    _pending_profile = _config.cloudProfile;
+
+    _panel = std::make_unique<Container>(lv_screen_active());
+    _panel->setBgColor(lv_color_hex(0xEDF4FF));
+    _panel->align(LV_ALIGN_CENTER, 0, 0);
+    _panel->setBorderWidth(0);
+    _panel->setSize(320, 240);
+    _panel->setRadius(0);
+    _panel->setPadding(0, 0, 0, 0);
+    _panel->removeFlag(LV_OBJ_FLAG_SCROLLABLE);
+
+    _label_title = std::make_unique<Label>(_panel->get());
+    _label_title->setText("AI Cloud Service:");
+    _label_title->setTextFont(&lv_font_montserrat_16);
+    _label_title->setTextColor(lv_color_hex(0x26206A));
+    _label_title->setWidth(300);
+    _label_title->setTextAlign(LV_TEXT_ALIGN_CENTER);
+    _label_title->align(LV_ALIGN_TOP_MID, 0, 18);
+
+    _btn_official = std::make_unique<Button>(_panel->get());
+    apply_button_common_style(*_btn_official);
+    _btn_official->align(LV_ALIGN_TOP_MID, 0, 50);
+    _btn_official->setSize(280, 52);
+    _btn_official->label().setText("Official (xiaozhi.me)");
+    _btn_official->label().setTextFont(&lv_font_montserrat_16);
+    _btn_official->onClick().connect([this]() {
+        _pending_profile = 0;
+        update_selection_style();
+    });
+
+    _btn_self = std::make_unique<Button>(_panel->get());
+    apply_button_common_style(*_btn_self);
+    _btn_self->align(LV_ALIGN_TOP_MID, 0, 112);
+    _btn_self->setSize(280, 52);
+    _btn_self->label().setText("Self-hosted (ECS)");
+    _btn_self->label().setTextFont(&lv_font_montserrat_16);
+    _btn_self->onClick().connect([this]() {
+        _pending_profile = 1;
+        update_selection_style();
+    });
+
+    _label_hint = std::make_unique<Label>(_panel->get());
+    _label_hint->setText("Takes effect after restart");
+    _label_hint->setTextFont(&lv_font_montserrat_14);
+    _label_hint->setTextColor(lv_color_hex(0x615B9E));
+    _label_hint->setWidth(300);
+    _label_hint->setTextAlign(LV_TEXT_ALIGN_CENTER);
+    _label_hint->align(LV_ALIGN_TOP_MID, 0, 176);
+
+    _btn_confirm = std::make_unique<Button>(_panel->get());
+    apply_button_common_style(*_btn_confirm);
+    _btn_confirm->align(LV_ALIGN_TOP_MID, 0, 196);
+    _btn_confirm->setSize(280, 40);
+    _btn_confirm->label().setText("Confirm");
+    _btn_confirm->label().setTextFont(&lv_font_montserrat_16);
+    _btn_confirm->onClick().connect([this]() { _confirm_flag = true; });
+
+    update_selection_style();
+}
+
+void XiaozhiCloudWorker::update_selection_style()
+{
+    auto apply = [](Button& btn, bool selected) {
+        btn.setBgColor(lv_color_hex(selected ? 0x615B9E : 0xB8D3FD));
+        btn.label().setTextColor(lv_color_hex(selected ? 0xFFFFFF : 0x26206A));
+    };
+    apply(*_btn_official, _pending_profile == 0);
+    apply(*_btn_self, _pending_profile == 1);
+}
+
+void XiaozhiCloudWorker::update()
+{
+    if (_confirm_flag) {
+        _confirm_flag          = false;
+        _config.cloudProfile   = _pending_profile;
+        GetHAL().setXiaozhiConfig(_config);
+        mclog::tagInfo(_tag, "cloud profile updated: {}", static_cast<int>(_config.cloudProfile));
+        _is_done = true;
+    }
+}

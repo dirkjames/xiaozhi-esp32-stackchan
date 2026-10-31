@@ -11,6 +11,29 @@ config STACKCHAN_SERVER_URL
 
 endmenu
 
+menu "StackChan Robot"
+
+config STACKCHAN_DUAL_MIC
+    bool "Capture MIC1 + MIC2 as a stereo pair"
+    default y
+    help
+        Select ES7210 MIC1 and MIC2 so the DOA engine can compare the
+        inter-channel phase. The conversation path keeps using channel 0 (MIC1);
+        channel 1 is only tapped by the localization module.
+
+        Disable to fall back to the legacy MIC1+MIC2+MIC3 selection.
+
+config STACKCHAN_DOA
+    bool "Enable sound source localization (DOA)"
+    depends on STACKCHAN_DUAL_MIC
+    default y
+    help
+        Traditional IPD based 3-class localization (left / center / right) over
+        the 300-800 Hz band, plus the look-at-sound head tracking loop and the
+        notifications/robotics sound_direction event.
+
+endmenu
+
 menu "Xiaozhi Assistant"
 
 config OTA_URL

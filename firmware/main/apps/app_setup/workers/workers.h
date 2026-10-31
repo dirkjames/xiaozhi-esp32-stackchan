@@ -376,6 +376,30 @@ private:
  * @brief
  *
  */
+class XiaozhiCloudWorker : public WorkerBase {
+public:
+    XiaozhiCloudWorker();
+    void update() override;
+
+private:
+    void update_selection_style();
+
+    std::unique_ptr<uitk::lvgl_cpp::Container> _panel;
+    std::unique_ptr<uitk::lvgl_cpp::Label> _label_title;
+    std::unique_ptr<uitk::lvgl_cpp::Button> _btn_official;
+    std::unique_ptr<uitk::lvgl_cpp::Button> _btn_self;
+    std::unique_ptr<uitk::lvgl_cpp::Label> _label_hint;
+    std::unique_ptr<uitk::lvgl_cpp::Button> _btn_confirm;
+
+    XiaozhiConfig_t _config;
+    uint8_t _pending_profile = 0;
+    bool _confirm_flag       = false;
+};
+
+/**
+ * @brief
+ *
+ */
 class TimezoneWorker : public WorkerBase {
 public:
     TimezoneWorker();

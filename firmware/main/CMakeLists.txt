@@ -289,8 +289,39 @@ if(CONFIG_IDF_TARGET_ESP32S3)
     list(APPEND SOURCES "${XIAOZHI_MAIN_DIR}/boards/common/esp32_camera.cc")
 endif()
 
+# ── 2026-10-30 端到端语音仿真测试（默认关闭，发版前保持 OFF）────────────────
+# 打开后：把 ../../../data 下 3 条 16k/16bit 录音嵌进固件，开机后按脚本
+# （dance → story → digits，各 2 轮）当作麦克风输入喂给 AFE，用来自动验证
+# listening(绿灯) / speaking(蓝灯) 期间是否卡顿、卡死。
+#   idf.py -B build -DSTACKCHAN_WAV_TEST=ON build
+option(STACKCHAN_WAV_TEST "Replay recorded WAVs as microphone input (end-to-end regression)" OFF)
+set(WAV_TEST_SOUNDS "")
+if(STACKCHAN_WAV_TEST)
+    set(WAVTEST_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../data")
+    set(WAVTEST_DST_DIR "${CMAKE_CURRENT_BINARY_DIR}/wavtest")
+    file(MAKE_DIRECTORY "${WAVTEST_DST_DIR}")
+    # configure_file(COPYONLY) 顺便把带空格/横杠的原文件名改成干净的名字，
+    # 这样 EMBED_FILES 生成的符号名稳定（_binary_wavtest_dance_wav_start ...）
+    set(WAVTEST_SRCS "test-wav-dance.wav" "test-wav-tell a story.wav" "test-wav12345678910.wav")
+    set(WAVTEST_DSTS "wavtest_dance.wav" "wavtest_story.wav" "wavtest_digits.wav")
+    list(LENGTH WAVTEST_SRCS WAVTEST_N)
+    math(EXPR WAVTEST_LAST "${WAVTEST_N} - 1")
+    foreach(i RANGE ${WAVTEST_LAST})
+        list(GET WAVTEST_SRCS ${i} SRC_NAME)
+        list(GET WAVTEST_DSTS ${i} DST_NAME)
+        if(EXISTS "${WAVTEST_SRC_DIR}/${SRC_NAME}")
+            configure_file("${WAVTEST_SRC_DIR}/${SRC_NAME}" "${WAVTEST_DST_DIR}/${DST_NAME}" COPYONLY)
+            list(APPEND WAV_TEST_SOUNDS "${WAVTEST_DST_DIR}/${DST_NAME}")
+        else()
+            message(WARNING "STACKCHAN_WAV_TEST: missing ${WAVTEST_SRC_DIR}/${SRC_NAME}")
+        endif()
+    endforeach()
+    add_compile_definitions(STACKCHAN_WAV_TEST)
+    message(STATUS "STACKCHAN_WAV_TEST enabled: ${WAV_TEST_SOUNDS}")
+endif()
+
 idf_component_register(SRCS ${SOURCES}
-                    EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS}
+                    EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS} ${WAV_TEST_SOUNDS}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
                     WHOLE_ARCHIVE
                     PRIV_REQUIRES
@@ -330,6 +361,10 @@ target_compile_definitions(${COMPONENT_LIB}
                     PRIVATE BOARD_TYPE=\"${BOARD_TYPE}\" BOARD_NAME=\"${BOARD_NAME}\"
                     PRIVATE BUILTIN_TEXT_FONT=${BUILTIN_TEXT_FONT} BUILTIN_ICON_FONT=${BUILTIN_ICON_FONT}
                     )
+
+# 2026-10-28 auto-test build: unattended session loop (blue-light hang soak test).
+# Remove the next line and rebuild to go back to the stock firmware behavior.
+# add_compile_definitions(XIAOZHI_AUTO_TEST)  # 2026-10-29 拉通验证完成, 已恢复正常固件; 下午用户手动测试
 
 # Add generation rules
 add_custom_command(
